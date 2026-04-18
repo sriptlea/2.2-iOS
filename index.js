@@ -5,20 +5,17 @@ var crypto = require("crypto");
 var decompress = require("decompress");
 require("dotenv").config();
 
-function getInput(envKey, fallbackPrompt, validateFn) {
-    let value = process.env[envKey];
+function getInput(envKey, validateFn) {
+    const value = process.env[envKey];
 
     if (!value) {
-        const prompt = require("prompt-sync")();
-        value = prompt(fallbackPrompt);
+        console.error(`Missing required env variable: ${envKey}`);
+        process.exit(1);
     }
 
-    if (validateFn) {
-        while (!validateFn(value)) {
-            console.log("Invalid input!\n");
-            const prompt = require("prompt-sync")();
-            value = prompt(fallbackPrompt);
-        }
+    if (validateFn && !validateFn(value)) {
+        console.error(`Invalid ${envKey}`);
+        process.exit(1);
     }
 
     return value;
@@ -43,29 +40,20 @@ async function main() {
         await dl(BASE_IPA_LINK, BASE_IPA_NAME);
     }
 
-    // ✅ SAFE INPUTS (works in GitHub Actions + local)
-    const name = getInput(
-        "name",
-        "Enter GDPS name: ",
-        v => v && v.trim().length > 0
-    ).replaceAll(" ", "");
+    // ✅ SAFE INPUTS (NO PROMPT, CI ONLY)
+
+    const name = getInput("name", v => v.trim().length > 0)
+        .replaceAll(" ", "");
 
     const dir = `${name.toLowerCase()}-${crypto.randomBytes(8).toString('hex')}`;
 
     const bundle = getInput(
         "bundle",
-        ICREATE_MODE
-            ? "Enter bundle id (21 chars): "
-            : "Enter bundle id (23 chars): ",
-        v => {
-            if (ICREATE_MODE) return v.length === 21;
-            return v.length === 23;
-        }
+        v => ICREATE_MODE ? v.length === 21 : v.length === 23
     );
 
     const base = getInput(
         "url",
-        "Enter URL (33 chars): ",
         v => v.length === 33
     );
 
@@ -105,7 +93,10 @@ async function main() {
         .replaceAll("aHR0cDovL3d3dy5ib29tbGluZ3MuY29tL2RhdGFiYXNl", b64);
 
     if (process.argv.includes("--megasa1nt")) {
-        gd = gd.replaceAll("https://www.newgrounds.com/audio/download/%i", `${url}//music/%i`);
+        gd = gd.replaceAll(
+            "https://www.newgrounds.com/audio/download/%i",
+            `${url}//music/%i`
+        );
     }
 
     await fs.promises.writeFile(`${path}/${name}`, gd, 'binary');
