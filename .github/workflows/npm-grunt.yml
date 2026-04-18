@@ -37,7 +37,8 @@ jobs:
         echo bundle=${{ inputs.bundle }} >> .env
         echo url=${{ inputs.url }} >> .env
         node index.js
-        mv ${{ inputs.name }}.ipa output.ipa
+        ls -la
+        mv *.ipa output.ipa
     - name: Upload a Build Artifact
       uses: actions/upload-artifact@v4.3.4
       with:
