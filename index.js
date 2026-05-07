@@ -1,8 +1,9 @@
-var dl = require('./dl.js');
-var zipFolder = require('./zipper');
-var fs = require("fs");
-var crypto = require("crypto");
-var decompress = require("decompress");
+const dl = require("./dl.js");
+const zipFolder = require("./zipper");
+const fs = require("fs");
+const crypto = require("crypto");
+const decompress = require("decompress");
+const plist = require("plist");
 require("dotenv").config();
 
 function getInput(envKey, validateFn) {
@@ -40,12 +41,10 @@ async function main() {
         await dl(BASE_IPA_LINK, BASE_IPA_NAME);
     }
 
-    // ✅ SAFE INPUTS (NO PROMPT, CI ONLY)
-
     const name = getInput("name", v => v.trim().length > 0)
         .replaceAll(" ", "");
 
-    const dir = `${name.toLowerCase()}-${crypto.randomBytes(8).toString('hex')}`;
+    const dir = `${name.toLowerCase()}-${crypto.randomBytes(8).toString("hex")}`;
 
     const bundle = getInput(
         "bundle",
@@ -57,58 +56,72 @@ async function main() {
         v => v.length === 33
     );
 
-    const b64 = Buffer.from(base).toString('base64');
+    const b64 = Buffer.from(base).toString("base64");
     const url = `${base}/`;
-    const path = `${dir}/Payload/${name}.app`;
+
+    const appPath = `${dir}/Payload/${name}.app`;
 
     console.log(`Decompressing ${BASE_IPA_NAME}\n`);
     await decompress(BASE_IPA_NAME, dir);
 
-    console.log("Editing IPA at " + dir + "\n");
+    console.log("Editing IPA...\n");
 
-    await fs.promises.rename(`${dir}/Payload/GeometryJump.app`, path);
-    await fs.promises.rename(`${path}/GeometryJump`, `${path}/${name}`);
+    await fs.promises.rename(`${dir}/Payload/GeometryJump.app`, appPath);
+    await fs.promises.rename(`${appPath}/GeometryJump`, `${appPath}/${name}`);
 
-    let plist = await fs.promises.readFile(`${path}/Info.plist`, 'utf8');
+    // -------------------------
+    // CLEAN INFO.PLIST PATCH
+    // -------------------------
+    const plistPath = `${appPath}/Info.plist`;
+    const plistData = plist.parse(
+        await fs.promises.readFile(plistPath, "utf8")
+    );
 
-    if (ICREATE_MODE) {
-        plist = plist
-            .replaceAll(BASE_BUNDLE_ID, bundle)
-            .replaceAll("GeometryJump", name)
-            .replaceAll("iCreate Pro", name);
-    } else {
-        plist = plist
-            .replaceAll(BASE_BUNDLE_ID, bundle)
-            .replaceAll("GeometryJump", name)
-            .replaceAll("Geometry", name);
-    }
+    plistData.CFBundleDisplayName = name;
+    plistData.CFBundleName = name;
+    plistData.CFBundleIdentifier = bundle;
 
-    await fs.promises.writeFile(`${path}/Info.plist`, plist, 'utf8');
+    // IMPORTANT: modern safe compatibility
+    plistData.MinimumOSVersion = "12.0";
 
-    let gd = await fs.promises.readFile(`${path}/${name}`, 'binary');
+    // REMOVE DEVICE WHITELISTS COMPLETELY (fixes iPhone 13 issue)
+    delete plistData.UISupportedDevices;
+    delete plistData.UIRequiredDeviceCapabilities;
+
+    await fs.promises.writeFile(
+        plistPath,
+        plist.build(plistData),
+        "utf8"
+    );
+
+    // -------------------------
+    // PATCH EXECUTABLE (your logic kept)
+    // -------------------------
+    let gd = await fs.promises.readFile(`${appPath}/${name}`);
 
     gd = gd
+        .toString("binary")
         .replaceAll(BASE_BUNDLE_ID, bundle)
         .replaceAll("https://www.boomlings.com/database", url)
-        .replaceAll("aHR0cDovL3d3dy5ib29tbGluZ3MuY29tL2RhdGFiYXNl", b64);
-
-    if (process.argv.includes("--megasa1nt")) {
-        gd = gd.replaceAll(
-            "https://www.newgrounds.com/audio/download/%i",
-            `${url}//music/%i`
+        .replaceAll(
+            "aHR0cDovL3d3dy5ib29tbGluZ3MuY29tL2RhdGFiYXNl",
+            b64
         );
-    }
 
-    await fs.promises.writeFile(`${path}/${name}`, gd, 'binary');
+    await fs.promises.writeFile(`${appPath}/${name}`, gd, "binary");
 
+    // -------------------------
+    // OPTIONAL ICREATE HOOK
+    // -------------------------
     if (ICREATE_MODE) {
-        let icreate = await fs.promises.readFile(`${path}/hook.dylib`, 'binary');
+        let icreate = await fs.promises.readFile(`${appPath}/hook.dylib`);
 
         icreate = icreate
+            .toString("binary")
             .replaceAll(BASE_BUNDLE_ID, bundle)
             .replaceAll("com.camila314.icreate", bundle);
 
-        await fs.promises.writeFile(`${path}/hook.dylib`, icreate, 'binary');
+        await fs.promises.writeFile(`${appPath}/hook.dylib`, icreate, "binary");
     }
 
     console.log("Compressing...\n");
@@ -117,7 +130,7 @@ async function main() {
 
     await fs.promises.rm(dir, { recursive: true, force: true });
 
-    console.log("Done! Project by DimisAIO.be :)");
+    console.log("Done!");
 }
 
 main();
