@@ -20,6 +20,54 @@ function getInput(envKey, validateFn) {
     return value;
 }
 
+// Recursively find all files matching a filename
+function findFiles(dir, filename) {
+    let results = [];
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = `${dir}/${entry.name}`;
+        if (entry.isDirectory()) {
+            results = results.concat(findFiles(full, filename));
+        } else if (entry.name === filename) {
+            results.push(full);
+        }
+    }
+    return results;
+}
+
+async function patchPlist(plistPath, patches) {
+    // Detect binary plist (starts with 'bplist')
+    const header = Buffer.alloc(6);
+    const fd = fs.openSync(plistPath, "r");
+    fs.readSync(fd, header, 0, 6, 0);
+    fs.closeSync(fd);
+
+    if (header.toString("ascii") === "bplist") {
+        execSync(`plutil -convert xml1 "${plistPath}"`);
+    }
+
+    const raw = await fs.promises.readFile(plistPath, "utf8");
+    const data = plist.parse(raw);
+
+    for (const [key, value] of Object.entries(patches)) {
+        if (value === null) {
+            delete data[key];
+        } else {
+            data[key] = value;
+        }
+    }
+
+    await fs.promises.writeFile(plistPath, plist.build(data), "utf8");
+    console.log(`  Patched: ${plistPath}`);
+
+    // Verify the key is gone
+    const verify = plist.parse(await fs.promises.readFile(plistPath, "utf8"));
+    if (verify.UISupportedDevices) {
+        console.error(`  WARNING: UISupportedDevices still present in ${plistPath}`);
+    } else {
+        console.log(`  Verified: UISupportedDevices removed from ${plistPath}`);
+    }
+}
+
 async function main() {
     const ICREATE_MODE = process.argv.includes("--icreate");
     const BASE_IPA_NAME = ICREATE_MODE ? "icreate.ipa" : "base.ipa";
@@ -56,26 +104,22 @@ async function main() {
     await fs.promises.rename(`${appPath}/GeometryJump`, `${appPath}/${name}`);
 
     // -------------------------
-    // INFO.PLIST PATCH
-    // Convert binary plist → XML first, then parse safely
+    // PATCH ALL INFO.PLISTs FOUND
     // -------------------------
-    const plistPath = `${appPath}/Info.plist`;
+    console.log("Scanning for all Info.plist files...");
+    const allPlists = findFiles(dir, "Info.plist");
+    console.log(`Found ${allPlists.length} Info.plist(s)\n`);
 
-    // Convert to XML plist in-place so the `plist` npm package can read it
-    execSync(`plutil -convert xml1 "${plistPath}"`);
-
-    const plistData = plist.parse(await fs.promises.readFile(plistPath, "utf8"));
-
-    plistData.CFBundleDisplayName = name;
-    plistData.CFBundleName = name;
-    plistData.CFBundleIdentifier = bundle;
-    plistData.MinimumOSVersion = "12.0";
-
-    // Remove device whitelists — this is what causes DeviceNotSupportedByThinning
-    delete plistData.UISupportedDevices;
-    delete plistData.UIRequiredDeviceCapabilities;
-
-    await fs.promises.writeFile(plistPath, plist.build(plistData), "utf8");
+    for (const p of allPlists) {
+        await patchPlist(p, {
+            CFBundleDisplayName: name,
+            CFBundleName: name,
+            CFBundleIdentifier: bundle,
+            MinimumOSVersion: "12.0",
+            UISupportedDevices: null,           // null = delete
+            UIRequiredDeviceCapabilities: null,
+        });
+    }
 
     // -------------------------
     // PATCH EXECUTABLE
@@ -101,7 +145,7 @@ async function main() {
         await fs.promises.writeFile(`${appPath}/hook.dylib`, icreate, "binary");
     }
 
-    console.log("Compressing...\n");
+    console.log("\nCompressing...\n");
     await zipFolder(dir, `${name}.ipa`);
     await fs.promises.rm(dir, { recursive: true, force: true });
     console.log("Done!");
